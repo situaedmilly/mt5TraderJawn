@@ -1,0 +1,1 @@
+"""Trading Stack Application"""
