@@ -14,6 +14,12 @@ class Settings(BaseSettings):
     environment: str = "development"
     # Security
     secret_key: str = "change-this-in-production"
+    # MT5 bridge connection
+    mt5_host: str | None = None
+    mt5_port: int | None = None
+    mt5_login: int | None = None
+    mt5_password: str | None = None
+    mt5_server: str | None = None
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
