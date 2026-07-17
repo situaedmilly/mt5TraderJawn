@@ -1,49 +1,95 @@
 """
-MT5 client placeholder
-This service will eventually connect to a Windows VPS running MetaTrader 5.
-For now, all methods are stubbed to establish the interface contract.
+MT5 bridge client
+
+Talks to a lightweight HTTP bridge process that runs alongside the MT5
+terminal (e.g. on the trading machine) and exposes REST endpoints for
+market data and order management. This client never imports the
+MetaTrader5 package directly -- it only speaks HTTP to the bridge, so it
+works regardless of where the bridge process itself runs.
+
+Expected bridge contract:
+    POST /connect          {login, password, server}      -> {"connected": bool}
+    POST /disconnect       {}                              -> {"disconnected": bool}
+    GET  /bars              ?symbol&timeframe&start&count  -> [{"time","open","high","low","close","volume"}, ...]
+    POST /orders            {symbol, order_type, volume,
+                              price, stop_loss, take_profit,
+                              comment}                      -> {"ticket": int, "status": str, ...}
+    GET  /positions         ?symbol                        -> [{"ticket", "symbol", ...}, ...]
+    GET  /account                                           -> {"balance", "equity", "margin", ...}
+    POST /positions/{ticket}/modify {stop_loss, take_profit} -> {"success": bool}
+    POST /positions/{ticket}/close                          -> {"success": bool}
 """
-from typing import List, Dict, Any
 from datetime import datetime
+from typing import Any, Dict, List
+
+import httpx
+
+from app.core.config import get_settings
+
+
+class MT5BridgeError(Exception):
+    """Raised when the MT5 bridge is unreachable or returns an error"""
+
+
 class MT5Client:
     """
-    MetaTrader 5 integration client
+    HTTP client for the MT5 bridge service
 
-    This is a placeholder class defining the interface for MT5 operations.
-    Actual implementation will use MetaTrader5 Python package or REST bridge.
+    The bridge itself wraps the real MetaTrader5 terminal/Python package
+    and runs wherever that terminal lives (e.g. the Mac/Windows machine
+    running MT5). This client just calls it over the network.
     """
-    def __init__(self, host: str = None, port: int = None):
-        """
-        Initialize MT5 connection parameters
 
-        Args:
-            host: MT5 server host (Windows VPS)
-            port: Connection port
-        """
+    def __init__(self, host: str, port: int, timeout: float = 10.0):
+        if not host or not port:
+            raise MT5BridgeError(
+                "MT5 bridge host/port not configured (set MT5_HOST and MT5_PORT)"
+            )
         self.host = host
         self.port = port
+        self.base_url = f"http://{host}:{port}"
+        self.timeout = timeout
         self.connected = False
+
+    @classmethod
+    def from_settings(cls) -> "MT5Client":
+        """Build a client from app settings (.env MT5_HOST / MT5_PORT)"""
+        settings = get_settings()
+        return cls(host=settings.mt5_host, port=settings.mt5_port)
+
+    def _request(self, method: str, path: str, **kwargs) -> Any:
+        url = f"{self.base_url}{path}"
+        try:
+            response = httpx.request(method, url, timeout=self.timeout, **kwargs)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise MT5BridgeError(
+                f"Bridge returned {exc.response.status_code} for {method} {path}: {exc.response.text}"
+            ) from exc
+        except httpx.RequestError as exc:
+            raise MT5BridgeError(
+                f"Could not reach MT5 bridge at {self.base_url} ({method} {path}): {exc}"
+            ) from exc
+        if response.content:
+            return response.json()
+        return None
+
     def connect(self, login: int, password: str, server: str) -> bool:
-        """
-        Establish connection to MT5 terminal
+        """Establish connection to MT5 terminal via the bridge"""
+        result = self._request(
+            "POST",
+            "/connect",
+            json={"login": login, "password": password, "server": server},
+        )
+        self.connected = bool(result and result.get("connected"))
+        return self.connected
 
-        Args:
-            login: MT5 account number
-            password: Account password
-            server: Broker server name
-
-        Returns:
-            bool: Connection success status
-        """
-        raise NotImplementedError("MT5 connection not yet implemented")
     def disconnect(self) -> bool:
-        """
-        Close MT5 connection
+        """Close MT5 connection via the bridge"""
+        result = self._request("POST", "/disconnect", json={})
+        self.connected = False
+        return bool(result and result.get("disconnected"))
 
-        Returns:
-            bool: Disconnection success status
-        """
-        raise NotImplementedError("MT5 disconnection not yet implemented")
     def fetch_bars(
         self,
         symbol: str,
@@ -51,19 +97,19 @@ class MT5Client:
         start: datetime,
         count: int,
     ) -> List[Dict[str, Any]]:
-        """
-        Fetch historical price bars
+        """Fetch historical OHLCV bars for a symbol from the bridge"""
+        bars = self._request(
+            "GET",
+            "/bars",
+            params={
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "start": start.isoformat(),
+                "count": count,
+            },
+        )
+        return bars or []
 
-        Args:
-            symbol: Trading symbol (e.g., "XAUUSD")
-            timeframe: Timeframe code (e.g., "M15", "H1")
-            start: Start datetime
-            count: Number of bars
-
-        Returns:
-            List[Dict]: OHLCV data
-        """
-        raise NotImplementedError("Bar fetching not yet implemented")
     def send_order(
         self,
         symbol: str,
@@ -74,67 +120,46 @@ class MT5Client:
         take_profit: float = None,
         comment: str = None,
     ) -> Dict[str, Any]:
-        """
-        Send trade order to MT5
+        """Send a trade order via the bridge"""
+        return self._request(
+            "POST",
+            "/orders",
+            json={
+                "symbol": symbol,
+                "order_type": order_type,
+                "volume": volume,
+                "price": price,
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+                "comment": comment,
+            },
+        )
 
-        Args:
-            symbol: Trading symbol
-            order_type: "market", "limit", "stop"
-            volume: Lot size
-            price: Entry price (for pending orders)
-            stop_loss: SL price
-            take_profit: TP price
-            comment: Order comment
-
-        Returns:
-            Dict: Order result with ticket number
-        """
-        raise NotImplementedError("Order execution not yet implemented")
     def get_positions(self, symbol: str = None) -> List[Dict[str, Any]]:
-        """
-        Query open positions
+        """Query open positions via the bridge"""
+        params = {"symbol": symbol} if symbol else None
+        positions = self._request("GET", "/positions", params=params)
+        return positions or []
 
-        Args:
-            symbol: Filter by symbol (optional)
-
-        Returns:
-            List[Dict]: Open positions
-        """
-        raise NotImplementedError("Position query not yet implemented")
     def get_account_info(self) -> Dict[str, Any]:
-        """
-        Get account information
+        """Get account information via the bridge"""
+        return self._request("GET", "/account")
 
-        Returns:
-            Dict: Account balance, equity, margin, etc
-        """
-        raise NotImplementedError("Account info query not yet implemented")
     def modify_position(
         self,
         ticket: int,
         stop_loss: float = None,
         take_profit: float = None,
     ) -> bool:
-        """
-        Modify existing position SL/TP
+        """Modify existing position SL/TP via the bridge"""
+        result = self._request(
+            "POST",
+            f"/positions/{ticket}/modify",
+            json={"stop_loss": stop_loss, "take_profit": take_profit},
+        )
+        return bool(result and result.get("success"))
 
-        Args:
-            ticket: Position ticket number
-            stop_loss: New SL price
-            take_profit: New TP price
-
-        Returns:
-            bool: Modification success
-        """
-        raise NotImplementedError("Position modification not yet implemented")
     def close_position(self, ticket: int) -> bool:
-        """
-        Close an open position
-
-        Args:
-            ticket: Position ticket number
-
-        Returns:
-            bool: Close success
-        """
-        raise NotImplementedError("Position close not yet implemented")
+        """Close an open position via the bridge"""
+        result = self._request("POST", f"/positions/{ticket}/close", json={})
+        return bool(result and result.get("success"))

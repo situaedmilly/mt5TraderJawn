@@ -167,6 +167,49 @@ Health
 4.  Execution Service: Build automated executor for approved proposals
 
 5.  Real-time Data: Integrate price feed for signal generation
+
+## Running an On-Demand SPY Scan
+
+`scan_spy()` in `app/services/scanner.py` is a real opening-range-breakout
+scanner (not a stub): it pulls M5 bars for SPY from an MT5 bridge over
+HTTP and looks for a breakout of the first 30 minutes' range.
+
+It needs a bridge process reachable over the network — `MT5Client` never
+talks to MetaTrader directly, it only calls a small HTTP service that
+wraps the MT5 terminal. That bridge process is **not included in this
+repo**; it has to run wherever the MT5 terminal lives (e.g. your Mac/VPS)
+and implement this contract:
+
+```
+POST /connect                    {login, password, server} -> {"connected": bool}
+POST /disconnect                 {}                         -> {"disconnected": bool}
+GET  /bars?symbol&timeframe&start&count
+                                                              -> [{"time","open","high","low","close","volume"}, ...]
+POST /orders                     {symbol, order_type, volume, price,
+                                   stop_loss, take_profit, comment}
+                                                              -> {"ticket": int, "status": str, ...}
+GET  /positions?symbol                                       -> [{"ticket", "symbol", ...}, ...]
+GET  /account                                                -> {"balance", "equity", "margin", ...}
+POST /positions/{ticket}/modify  {stop_loss, take_profit}    -> {"success": bool}
+POST /positions/{ticket}/close   {}                          -> {"success": bool}
+```
+
+Once that bridge is running and reachable, point this app at it and seed
+SPY's symbol/strategy rows:
+
+```bash
+# .env
+MT5_HOST=<bridge host, e.g. localhost or your Mac's LAN IP>
+MT5_PORT=<bridge port>
+
+python scripts/seed_core_data.py     # creates the SPY symbol + SPY_ORB strategy once
+python -m app.workers.scanner_worker --symbol SPY
+```
+
+If the bridge is unreachable, the scan logs the error and skips instead
+of crashing the whole worker run. If no breakout is found, no signal is
+created.
+
     Production Deployment
     Environment Variables
     Ensure these are set in production:

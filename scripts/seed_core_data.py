@@ -34,6 +34,11 @@ def seed_symbols(db):
             "display_name": "NASDAQ 100 Index",
             "asset_class": "indices",
         },
+        {
+            "symbol": "SPY",
+            "display_name": "SPDR S&P 500 ETF",
+            "asset_class": "equities",
+        },
     ]
     for data in symbols_data:
         existing = db.query(Symbol).filter(Symbol.symbol == data["symbol"]).first()
@@ -70,6 +75,14 @@ def seed_strategies(db):
             "phase": "phase_1",
             "timeframe_bias": "H1",
             "timeframe_entry": "M15",
+        },
+        {
+            "name": "SPY Opening Range Breakout",
+            "code": "SPY_ORB",
+            "description": "Breakout of the first 30 minutes' range on SPY",
+            "phase": "phase_1",
+            "timeframe_bias": "M5",
+            "timeframe_entry": "M5",
         },
     ]
     for data in strategies_data:
